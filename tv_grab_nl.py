@@ -139,6 +139,7 @@ except ImportError:
     from htmlentitydefs import name2codepoint
 from threading import Thread
 from threading import Lock
+from threading import active_count
 from xml.sax import saxutils
 from xml.etree import cElementTree as ET
 from collections import deque
@@ -246,8 +247,9 @@ def log(message, log_level = 1, log_target = 3, Locked = False):
             else:
                 sys.stderr.write(now() + message + '\n')
 
-            if log_level <= 1:
-                config.log_output.flush()
+            # FG Why not flush after each entry? The overhead is limited.
+            #if log_level <= 1:
+            config.log_output.flush()
 
         if not Locked:
             config.log_lock.release()
@@ -273,7 +275,7 @@ class Configure:
         self.major = 2
         self.minor = 1
         self.patch = 10
-        self.patchdate = u'20150807'
+        self.patchdate = u'20150808'
         self.alfa = False
         self.beta = True
 
@@ -428,6 +430,9 @@ class Configure:
         # with mythtv, be sure to set the timezone in mythtv to 'auto'
         # (TimeOffset in Settings table)
         self.opt_dict['use_utc'] = False
+
+        # location of the logfile
+        self.opt_dict['log_file'] = None
 
         # The values for the Kijkwijzer
         self.kijkwijzer = {'1': {'code': 'AL','text': 'Voor alle leeftijden',
@@ -1241,6 +1246,9 @@ class Configure:
                         metavar = '<minutes>',
                         help = 'maximum length of overlap between programming to correct\n<default 10 minutes>')
 
+        parser.add_argument('-L', '--log_file', type = str, default = None, dest = 'log_file',
+                        help = 'path to the logfile to be used')
+
         # Handle the sys.exit(0) exception on --help more gracefull
         try:
             self.args = parser.parse_args()
@@ -1275,7 +1283,8 @@ class Configure:
                 if not line:
                     continue
 
-                if line[0:1] == '#' and type != 3:
+                # FG skip lines starting with #, also for type==3
+                if line[0:1] == '#':
                     continue
 
                 # Look for section headers
@@ -1318,6 +1327,9 @@ class Configure:
 
                         elif a[0].lower().strip() == 'output_file':
                             self.opt_dict['output_file'] = None if (len(a) == 1 or a[1].lower().strip() == 'none') else a[1].strip()
+
+                        elif a[0].lower().strip() == 'log_file':
+                            self.opt_dict['log_file'] = None if (len(a) == 1 or a[1].lower().strip() == 'none') else a[1].strip()
 
                         elif len(a) == 2:
                             # Integer Values
@@ -1745,8 +1757,12 @@ class Configure:
         if self.args.config_file != self.config_file:
             # use the provided name for configuration and logging
             self.config_file = self.args.config_file
-            self.log_file = self.args.config_file+'.log'
             log('Using config file: %s\n' % self.args.config_file)
+
+        if self.args.log_file is None:
+            self.log_file = self.args.config_file+'.log'
+        else:
+            self.log_file = self.args.log_file
 
         if self.validate_option('log_file') != None:
             return(2)
@@ -1826,6 +1842,9 @@ class Configure:
         if self.args.output_file != None:
             self.opt_dict['output_file'] = self.args.output_file
 
+        if self.args.log_file != None:
+            self.opt_dict['log_file'] = self.args.log_file
+
         if self.args.use_npo != None:
             self.opt_dict['use_npo'] = self.args.use_npo
             for chanid in self.channels.keys():
@@ -1850,6 +1869,8 @@ class Configure:
         self.validate_option('tevedays')
         self.validate_option('rtldays')
         if self.validate_option('output_file') != None:
+            return(2)
+        if self.validate_option('log_file') != None:
             return(2)
 
         if not self.args.configure and self.configversion < 2.1:
@@ -2091,6 +2112,7 @@ class Configure:
         log(u'clean_cache = %s' % (self.clean_cache), 1, 2)
         log(u'clear_cache = %s' % (self.clear_cache), 1, 2)
         log(u'output_file = %s' % (self.opt_dict['output_file']), 1, 2)
+        log(u'log_file = %s' % (self.opt_dict['log_file']), 1, 2)
         log(u'quiet = %s' % (self.opt_dict['quiet']), 1, 2)
         log(u'fast = %s' % (self.opt_dict['fast']), 1, 2)
         log(u'offset = %s' % (self.opt_dict['offset']), 1, 2)
@@ -5565,7 +5587,7 @@ class tvgids_JSON(FetchData):
                 if self.quit:
                     return
 
-                # Check if it is allready loaded
+                # Check if it is already loaded
                 if self.day_loaded[0][offset]:
                     continue
 
@@ -5589,7 +5611,7 @@ class tvgids_JSON(FetchData):
 
                 # Just let the json library parse it.
                 for chanid, v in json.loads(strdata).iteritems():
-                    # Most channels profide a list of program dicts, some a numbered dict
+                    # Most channels provide a list of program dicts, some a numbered dict
                     try:
                         if isinstance(v, dict):
                             v=list(v.values())
@@ -8174,6 +8196,9 @@ class Channel_Config(Thread):
         self.opt_dict['prefered_description'] = -1
         self.opt_dict['append_tvgidstv'] = True
 
+        #FG debug
+        #log('FG Channel_Config __init__ for %s %s\n' % (self.chanid, self.chan_name), 2)
+
     def validate_settings(self):
 
         if not self.active:
@@ -8185,6 +8210,9 @@ class Channel_Config(Thread):
         config.validate_option('slowdays', self)
 
     def run(self):
+
+        #FG debug
+        log('FG Channel_Config run(self) for %s %s, thread: %s \n' % (self.chanid, self.chan_name, self.name), 2)
 
         if not self.active:
             self.ready = True
@@ -8352,6 +8380,7 @@ class Channel_Config(Thread):
     def get_counter(self):
         self.fetch_counter += 1
         return 100*float(self.fetch_counter)/float(self.nprograms)
+
     def get_details(self, ):
         """
         Given a list of programs, from the several sources, retrieve program details
@@ -8419,7 +8448,7 @@ class Channel_Config(Thread):
                     self.detailed_programs.append(self.use_cache(p, cached_program))
                     continue
 
-            # Either we are fast-mode, outsite slowdays or there is no url. So we continue
+            # Either we are fast-mode, outside slowdays or there is no url. So we continue
             try:
                 no_detail_fetch = (no_fetch or ((p[xml_output.channelsource[0].detail_url] == '') and (p[xml_output.channelsource[1].detail_url] == '')))
 
@@ -9063,6 +9092,8 @@ def main():
             return(x)
 
         log("The Netherlands: %s\n" % config.version(True), 1, 1)
+        start_time = datetime.datetime.now()
+        log('Start time of this run: %s\n' % (start_time.strftime('%Y-%m-%d %H:%M')),2)
 
         # Start the seperate fetching threads
         for source in xml_output.channelsource.values():
@@ -9072,21 +9103,37 @@ def main():
 
         # Start the Channel threads
         counter = 0
+        channel_threads = []
         for channel in config.channels.values():
             if not channel.active:
                 continue
 
             counter += 1
             channel.counter = counter
-            x = channel.start()
-            if x != None:
-                return(x)
+            log('FG Starting thread for %s, current number of threads %d \n' % (channel.chan_name, active_count()))
+
+            # FG Start the processing thread for one channel, all days
+            channel.start()
+
+            # FG Store reference to thread for thread management
+            channel_threads.append(channel)
+
+            log('FG Started thread named "%s" for "%s", current number of threads %d \n' % (channel.name, channel.chan_name, active_count()))
 
         # This thread monitors the cache and saves it at an interval
         xml_output.program_cache.start()
 
-        xml_output.channelsource[0].join()
-        xml_output.channelsource[1].join()
+        # FG: cache should not be driving this, but Channel_Config threads
+        #xml_output.channelsource[0].join()
+        #xml_output.channelsource[1].join()
+
+        log('FG All channel threads started (%d) \n' % (counter),2)
+
+        # Synchronize
+        for this_channel_thread in channel_threads:
+            this_channel_thread.join()
+
+        log('FG All channel threads ended, proceeding.. \n',2)
 
         # Make sure the cache is saved
         xml_output.program_cache.quit = True
@@ -9096,6 +9143,12 @@ def main():
         xml_output.print_string()
         xml_output.program_cache.join()
         xml_output.program_cache = None
+
+        # Report duration
+        end_time = datetime.datetime.now()
+        duration = end_time - start_time
+
+        log('\nExecution complete. Summary:\nStart time of this run: %s\nEnd time: %s\nDuration: %s \n' % (start_time.strftime('%Y-%m-%d %H:%M'), end_time.strftime('%Y-%m-%d %H:%M'), duration),2)
 
     except:
         config.log_lock.acquire()
